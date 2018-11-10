@@ -16,8 +16,6 @@ type Server struct {
 func (server *Server) Init() {
 	server.clients = make(map[*websocket.Conn]bool)
 	server.broadcast = make(chan model.Message)
-
-	// Configure the upgrader
 	server.upgrader = websocket.Upgrader{
 		CheckOrigin: func(r *http.Request) bool {
 			return true
@@ -25,20 +23,62 @@ func (server *Server) Init() {
 	}
 }
 
-func (server *Server) Start() {
+func (server *Server) InitHandlers() {
+	handleConnections := func(w http.ResponseWriter, r *http.Request) {
+		// Upgrade initial GET request to a websocket
+		ws, err := server.upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			log.Fatal(err)
+		}
+		// Make sure we close the connection when the function returns
+		defer ws.Close()
+		server.clients[ws] = true
+
+		for {
+			var msg model.Message
+			// Read in a new message as JSON and map it to a Message object
+			err := ws.ReadJSON(&msg)
+			if err != nil {
+				log.Printf("error: %v", err)
+				delete(server.clients, ws)
+				break
+			}
+			// Send the newly received message to the broadcast channel
+			server.broadcast <- msg
+		}
+	}
+
+	//Configure websocket route
+	http.HandleFunc("/ws", handleConnections)
+}
+
+func (server *Server) Start(staticDir, port string) {
 	// Create a simple file server
-	fs := http.FileServer(http.Dir("web/static"))
+	fs := http.FileServer(http.Dir(staticDir))
 	http.Handle("/", fs)
 
-	// Configure websocket route
-	//http.HandleFunc("/ws", handleConnections)
-	//
-	//go handleMessages()
+	go handleMessages(server)
 
 	// Start the server on localhost port 8000 and log any errors
-	log.Println("http server started on :8000")
-	err := http.ListenAndServe(":8000", nil)
+	log.Println("http server started on :" + port)
+	err := http.ListenAndServe(":"+port, nil)
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
+	}
+}
+
+func handleMessages(server *Server) {
+	for {
+		// Grab the next message from the broadcast channel
+		msg := <-server.broadcast
+		// Send it out to every client that is currently connected
+		for client := range server.clients {
+			err := client.WriteJSON(msg)
+			if err != nil {
+				log.Printf("error: %v", err)
+				client.Close()
+				delete(server.clients, client)
+			}
+		}
 	}
 }
