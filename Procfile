@@ -1,1 +1,1 @@
-web: cmd/firewriter/firewriter
+web: bin/firewriter
